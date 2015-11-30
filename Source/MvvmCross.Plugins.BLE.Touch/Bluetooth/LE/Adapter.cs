@@ -83,17 +83,9 @@ namespace MvvmCross.Plugins.BLE.Touch.Bluetooth.LE
                     // iOS caches the peripheral name, so it can become stale (if changing) unless we keep track of the local name key manually
                     name = (e.AdvertisementData.ValueForKey(CBAdvertisement.DataLocalNameKey) as NSString).ToString();
                 }
-                if (e.AdvertisementData.ContainsKey(CBAdvertisement.DataManufacturerDataKey))
-                {
-                    d = new Device(e.Peripheral,
-                        name,
-                        e.RSSI.Int32Value,
-                        (e.AdvertisementData.ValueForKey(CBAdvertisement.DataManufacturerDataKey) as NSData).ToArray());
-                }
-                else
-                {
-                    d = new Device(e.Peripheral, name, e.RSSI.Int32Value, new byte[0]);
-                }
+
+                d = new Device(e.Peripheral, name, e.RSSI.Int32Value, ParseAdvertismentData(e.AdvertisementData));
+
                 this.DeviceAdvertised(this, new DeviceDiscoveredEventArgs() { Device = d });
                 if (!ContainsDevice(this._discoveredDevices, e.Peripheral))
                 {
@@ -112,7 +104,7 @@ namespace MvvmCross.Plugins.BLE.Touch.Bluetooth.LE
 
             _central.ConnectedPeripheral += (sender, e) =>
             {
-                Mvx.Trace("ConnectedPeripheral: " + e.Peripheral.Name);
+                Mvx.Trace("ConnectedPeripherial: " + e.Peripheral.Name);
 
                 // when a peripheral gets connected, add that peripheral to our running list of connected peripherals
                 var guid = ParseDeviceGuid(e.Peripheral).ToString();
@@ -126,8 +118,6 @@ namespace MvvmCross.Plugins.BLE.Touch.Bluetooth.LE
 
             _central.DisconnectedPeripheral += (sender, e) =>
             {
-                Mvx.Trace("DisconnectedPeripheral: " + e.Peripheral.Name);
-
                 // when a peripheral disconnects, remove it from our running list.
                 var id = ParseDeviceGuid(e.Peripheral);
                 var stringId = id.ToString();
@@ -148,10 +138,13 @@ namespace MvvmCross.Plugins.BLE.Touch.Bluetooth.LE
 
                 if (isNormalDisconnect)
                 {
+                    Mvx.Trace("DisconnectedPeripheral by user: {0}", e.Peripheral.Name);
+
                     DeviceDisconnected(sender, new DeviceConnectionEventArgs { Device = foundDevice });
                 }
                 else
                 {
+                    Mvx.Trace("DisconnectedPeripheral by lost signal: {0}", e.Peripheral.Name);
                     DeviceConnectionLost(sender, new DeviceConnectionEventArgs() { Device = foundDevice ?? new Device(e.Peripheral) });
                 }
             };
@@ -269,6 +262,68 @@ namespace MvvmCross.Plugins.BLE.Touch.Bluetooth.LE
         protected bool ContainsDevice(IEnumerable<IDevice> list, CBPeripheral device)
         {
             return list.Any(d => Guid.ParseExact(device.Identifier.AsString(), "d") == d.ID);
+        }
+
+        public static List<AdvertisementRecord> ParseAdvertismentData(NSDictionary AdvertisementData)
+        {
+            var records = new List<AdvertisementRecord>();
+
+            var keys = new List<NSString>
+            {
+                CBAdvertisement.DataLocalNameKey,
+                CBAdvertisement.DataManufacturerDataKey, 
+                CBAdvertisement.DataOverflowServiceUUIDsKey, //ToDo ??which one is this according to ble spec
+                CBAdvertisement.DataServiceDataKey, 
+                CBAdvertisement.DataServiceUUIDsKey,
+                CBAdvertisement.DataSolicitedServiceUUIDsKey
+            };
+
+            foreach (var key in keys)
+            {
+                var record = CreateAdvertisementRecordForKey(AdvertisementData, key);
+                if (record != null)
+                {
+                    records.Add(record);
+                    Mvx.Trace("{0} : {1}", key, record.ToString());
+                }
+            }
+
+            return records;
+        }
+
+        public static AdvertisementRecord CreateAdvertisementRecordForKey(NSDictionary AdvertisementData, NSString key)
+        {
+            if (!AdvertisementData.ContainsKey(key))
+            {
+                return null;
+            }
+
+            var data = AdvertisementData.ValueForKey(key);
+
+            if (key == CBAdvertisement.DataLocalNameKey)
+                return new AdvertisementRecord(AdvertisementRecordType.CompleteLocalName, NSData.FromString((NSString)data).ToArray());
+
+            if (key == CBAdvertisement.DataServiceUUIDsKey)
+            {
+                var array = (NSArray)data;
+
+                var dataList = new List<NSData>();
+                for (nuint i = 0; i < array.Count; i++)
+                {
+                    var cbuuid = array.GetItem<CBUUID>(i);
+                    dataList.Add(cbuuid.Data);
+                }
+                return new AdvertisementRecord(AdvertisementRecordType.UuidsComplete128Bit, dataList.SelectMany(d => d.ToArray()).ToArray());
+            }
+
+            if (key == CBAdvertisement.DataManufacturerDataKey)
+                return new AdvertisementRecord(AdvertisementRecordType.ManufacturerSpecificData, ((NSData)data).ToArray());
+
+
+            Mvx.Trace("Advertisment record: don't know how to convert data for type {0} and key {1}", data.GetType().Name, key);
+
+
+            return null;
         }
     }
 }
